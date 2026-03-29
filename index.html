@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Air Draw V4.5</title>
+<title>Air Draw Final</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
@@ -14,7 +14,6 @@ margin:0;
 overflow:hidden;
 background:black;
 }
-
 #output_canvas{
 position:absolute;
 top:0;
@@ -23,7 +22,6 @@ width:100vw;
 height:100vh;
 transform: scaleX(-1);
 }
-
 #input_video{
 display:none;
 }
@@ -36,7 +34,6 @@ display:none;
 <canvas id="output_canvas"></canvas>
 
 <script>
-
 const video = document.getElementById("input_video");
 const canvas = document.getElementById("output_canvas");
 const ctx = canvas.getContext("2d");
@@ -70,19 +67,18 @@ function isVictory(lm){
 return lm[8].y < lm[6].y && lm[12].y < lm[10].y;
 }
 
-// forward hand detection (Z depth)
+// forward hand
 function isForward(lm){
-return lm[8].z < -0.1; // closer to camera
+return lm[8].z < -0.1;
 }
 
-// auto shape detect
+// auto shape
 function detectShape(path){
 
 if(path.length < 10) return path;
 
-// bounding box
-let minX=Infinity, maxX=-Infinity;
-let minY=Infinity, maxY=-Infinity;
+let minX=Infinity,maxX=-Infinity;
+let minY=Infinity,maxY=-Infinity;
 
 path.forEach(p=>{
 minX=Math.min(minX,p.x);
@@ -93,31 +89,30 @@ maxY=Math.max(maxY,p.y);
 
 let w=maxX-minX;
 let h=maxY-minY;
+let ratio=w/h;
 
-// circle detect
-let ratio = w/h;
-
-if(ratio > 0.7 && ratio < 1.3){
+// circle
+if(ratio>0.7 && ratio<1.3){
 let cx=(minX+maxX)/2;
 let cy=(minY+maxY)/2;
 let r=Math.max(w,h)/2;
 
 let newPath=[];
 for(let i=0;i<50;i++){
-let angle=(i/50)*Math.PI*2;
+let a=(i/50)*Math.PI*2;
 newPath.push({
-x:cx + r*Math.cos(angle),
-y:cy + r*Math.sin(angle)
+x:cx+r*Math.cos(a),
+y:cy+r*Math.sin(a)
 });
 }
 return newPath;
 }
 
-// line detect
+// line
 let start=path[0];
 let end=path[path.length-1];
 
-if(dist(start,end) > 100){
+if(dist(start,end)>100){
 return [start,end];
 }
 
@@ -129,11 +124,14 @@ let lastClear=0;
 
 function onResults(res){
 
+// clear screen
 ctx.fillStyle="black";
 ctx.fillRect(0,0,canvas.width,canvas.height);
 
 // draw old
 drawings.forEach(d=>{
+if(d.length<2) return;
+
 ctx.beginPath();
 ctx.strokeStyle="red";
 ctx.lineWidth=5;
@@ -154,17 +152,20 @@ ctx.stroke();
 ctx.shadowBlur=0;
 });
 
-if(res.multiHandLandmarks){
+// ✅ SAFE HAND CHECK (MAIN FIX)
+if(res.multiHandLandmarks && res.multiHandLandmarks.length>0){
 
 let lm=res.multiHandLandmarks[0];
 
-// coords
+// extra safety
+if(!lm || !lm[8]) return;
+
 let rawX=lm[8].x*canvas.width;
 let rawY=lm[8].y*canvas.height;
 
 // smooth
-sx = sx*smooth + rawX*(1-smooth);
-sy = sy*smooth + rawY*(1-smooth);
+sx=sx*smooth+rawX*(1-smooth);
+sy=sy*smooth+rawY*(1-smooth);
 
 let point={x:sx,y:sy};
 
@@ -174,7 +175,7 @@ drawings=[];
 lastClear=Date.now();
 }
 
-// 🔥 DRAW only when hand forward
+// draw
 else if(isDraw(lm) && isForward(lm)){
 
 if(!currentPath){
@@ -203,10 +204,10 @@ currentPath.push(point);
 
 }else{
 
-// 🧠 AUTO SHAPE when released
+// auto shape on release
 if(currentPath && currentPath.length>5){
-let fixed = detectShape(currentPath);
-drawings[drawings.length-1] = fixed;
+let fixed=detectShape(currentPath);
+drawings[drawings.length-1]=fixed;
 }
 
 currentPath=null;
@@ -236,6 +237,9 @@ ctx.stroke();
 
 ctx.shadowBlur=0;
 
+}else{
+// no hand → stop drawing safely
+currentPath=null;
 }
 
 }
@@ -254,6 +258,7 @@ minTrackingConfidence:0.7
 
 hands.onResults(onResults);
 
+// camera
 const camera=new Camera(video,{
 onFrame: async()=>{
 await hands.send({image:video});
@@ -262,7 +267,7 @@ width:640,
 height:480
 });
 
-// start on click
+// start (browser safe)
 document.body.addEventListener("click",()=>{
 camera.start();
 },{once:true});
