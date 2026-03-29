@@ -1,278 +1,341 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="az">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Air Draw Final</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Blue Skeleton Laser</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    
+    <style>
+        :root {
+            --neon-blue: #00f2ff;
+            --laser-red: #ff0000;
+            --selection-yellow: #ffff00;
+            --dark-bg: #000000;
+        }
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            overflow: hidden;
+            background-color: var(--dark-bg);
+        }
 
-<style>
-body,html{
-margin:0;
-overflow:hidden;
-background:black;
-}
-#output_canvas{
-position:absolute;
-top:0;
-left:0;
-width:100vw;
-height:100vh;
-transform: scaleX(-1);
-}
-#input_video{
-display:none;
-}
-</style>
+        #input_video { 
+            position: absolute;
+            visibility: hidden;
+            width: 1px; height: 1px;
+            transform: scaleX(-1);
+        }
+
+        #output_canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 5;
+            transform: scaleX(-1);
+        }
+
+        #loading-screen {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+
+        .loader {
+            width: 50px; height: 50px;
+            border: 3px solid #111;
+            border-top: 3px solid var(--neon-blue);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>
 </head>
-
 <body>
 
-<video id="input_video" autoplay playsinline muted></video>
-<canvas id="output_canvas"></canvas>
+    <div id="loading-screen">
+        <div class="loader"></div>
+    </div>
 
-<script>
-const video = document.getElementById("input_video");
-const canvas = document.getElementById("output_canvas");
-const ctx = canvas.getContext("2d");
+    <video id="input_video" playsinline></video>
+    <canvas id="output_canvas"></canvas>
 
-let drawings=[];
-let currentPath=null;
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const loadingScreen = document.getElementById('loading-screen');
 
-// smoothing
-let sx=0, sy=0;
-const smooth=0.65;
+        let drawings = []; 
+        let particles = [];
+        let currentPath = null;
+        let selectedDrawing = null;
+        let isDragging = false;
+        let lastFingerPos = { x: 0, y: 0 };
 
-// resize
-function resize(){
-canvas.width=window.innerWidth;
-canvas.height=window.innerHeight;
-}
-resize();
-window.addEventListener("resize",resize);
+        function setupCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', setupCanvas);
+        setupCanvas();
 
-// distance
-function dist(a,b){
-return Math.hypot(a.x-b.x,a.y-b.y);
-}
+        class Spark {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                const angle = Math.random() * Math.PI * 2;
+                const force = Math.random() * 15 + 10;
+                this.speedX = Math.cos(angle) * force;
+                this.speedY = Math.sin(angle) * force;
+                
+                this.life = 1.0;
+                this.decay = Math.random() * 0.03 + 0.015;
+                this.gravity = 0.45;
+                this.friction = 0.96; 
+            }
 
-// gestures
-function isDraw(lm){
-return lm[8].y < lm[6].y;
-}
+            update() {
+                this.speedX *= this.friction;
+                this.speedY *= this.friction;
+                this.speedY += this.gravity;
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.life -= this.decay;
+            }
 
-function isVictory(lm){
-return lm[8].y < lm[6].y && lm[12].y < lm[10].y;
-}
+            draw() {
+                if (this.life <= 0) return;
 
-// forward hand
-function isForward(lm){
-return lm[8].z < -0.1;
-}
+                let r, g, b;
+                if (this.life > 0.8) {
+                    r = 255; g = 255; b = 200; 
+                } else if (this.life > 0.4) {
+                    r = 255; g = 200; b = 50;  
+                } else {
+                    r = 200; g = 50; b = 0;    
+                }
 
-// auto shape
-function detectShape(path){
+                canvasCtx.save();
+                canvasCtx.globalAlpha = this.life;
+                canvasCtx.strokeStyle = `rgb(${r},${g},${b})`;
+                canvasCtx.lineWidth = 1.5 * this.life;
+                canvasCtx.lineCap = 'round';
+                
+                canvasCtx.shadowBlur = 8 * this.life;
+                canvasCtx.shadowColor = `rgb(${r},${g},${b})`;
 
-if(path.length < 10) return path;
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(this.x, this.y);
+                const tailX = this.x - this.speedX * 0.8;
+                const tailY = this.y - this.speedY * 0.8;
+                canvasCtx.lineTo(tailX, tailY);
+                canvasCtx.stroke();
+                canvasCtx.restore();
+            }
+        }
 
-let minX=Infinity,maxX=-Infinity;
-let minY=Infinity,maxY=-Infinity;
+        function createSparkEffect(x, y) {
+            const count = Math.floor(Math.random() * 4) + 3;
+            for (let i = 0; i < count; i++) {
+                particles.push(new Spark(x, y));
+            }
+        }
 
-path.forEach(p=>{
-minX=Math.min(minX,p.x);
-maxX=Math.max(maxX,p.x);
-minY=Math.min(minY,p.y);
-maxY=Math.max(maxY,p.y);
-});
+        function getDistance(p1, p2) {
+            return Math.sqrt(
+                Math.pow((p1.x - p2.x) * canvasElement.width, 2) + 
+                Math.pow((p1.y - p2.y) * canvasElement.height, 2)
+            );
+        }
 
-let w=maxX-minX;
-let h=maxY-minY;
-let ratio=w/h;
+        function isStrictlyIndexUp(lm) {
+            const thumbOpen = getDistance(lm[4], lm[17]) > getDistance(lm[3], lm[17]);
+            const indexOpen = lm[8].y < lm[6].y;
+            const middleOpen = lm[12].y < lm[10].y;
+            const ringOpen = lm[16].y < lm[14].y;
+            const pinkyOpen = lm[20].y < lm[18].y;
+            return indexOpen && !middleOpen && !ringOpen && !pinkyOpen && !thumbOpen;
+        }
 
-// circle
-if(ratio>0.7 && ratio<1.3){
-let cx=(minX+maxX)/2;
-let cy=(minY+maxY)/2;
-let r=Math.max(w,h)/2;
+        function findDrawingAt(x, y) {
+            const padding = 80; 
+            for (let i = drawings.length - 1; i >= 0; i--) {
+                const d = drawings[i];
+                for (let p of d.points) {
+                    if (Math.hypot(x - p.x, y - p.y) < padding) return d;
+                }
+            }
+            return null;
+        }
 
-let newPath=[];
-for(let i=0;i<50;i++){
-let a=(i/50)*Math.PI*2;
-newPath.push({
-x:cx+r*Math.cos(a),
-y:cy+r*Math.sin(a)
-});
-}
-return newPath;
-}
+        function onResults(results) {
+            if (loadingScreen.style.display !== 'none') loadingScreen.style.display = 'none';
 
-// line
-let start=path[0];
-let end=path[path.length-1];
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.fillStyle = '#000000';
+            canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
 
-if(dist(start,end)>100){
-return [start,end];
-}
+            drawStoredPaths();
+            updateParticles();
 
-return path;
-}
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0];
+                const indexTip = hand[8];
+                const thumbTip = hand[4];
+                
+                const ix = indexTip.x * canvasElement.width;
+                const iy = indexTip.y * canvasElement.height;
+                const tx = thumbTip.x * canvasElement.width;
+                const ty = thumbTip.y * canvasElement.height;
+                
+                const pinchDist = getDistance(hand[4], hand[8]);
 
-// cooldown
-let lastClear=0;
+                if (isStrictlyIndexUp(hand)) {
+                    if (!currentPath) {
+                        currentPath = { points: [], id: Date.now() };
+                        drawings.push(currentPath);
+                    }
+                    currentPath.points.push({ x: ix, y: iy });
+                    createSparkEffect(ix, iy);
+                    isDragging = false;
+                    selectedDrawing = null;
+                } 
+                else if (pinchDist < 45) {
+                    const midX = (ix + tx) / 2;
+                    const midY = (iy + ty) / 2;
 
-function onResults(res){
+                    if (!isDragging) {
+                        selectedDrawing = findDrawingAt(midX, midY);
+                        if (selectedDrawing) {
+                            isDragging = true;
+                            lastFingerPos = { x: midX, y: midY };
+                        }
+                    }
 
-// clear screen
-ctx.fillStyle="black";
-ctx.fillRect(0,0,canvas.width,canvas.height);
+                    if (isDragging && selectedDrawing) {
+                        const dx = midX - lastFingerPos.x;
+                        const dy = midY - lastFingerPos.y;
+                        selectedDrawing.points.forEach(p => {
+                            p.x += dx;
+                            p.y += dy;
+                        });
+                        lastFingerPos = { x: midX, y: midY };
+                    }
+                    currentPath = null;
+                }
+                else {
+                    currentPath = null;
+                    isDragging = false;
+                    selectedDrawing = null;
+                }
 
-// draw old
-drawings.forEach(d=>{
-if(d.length<2) return;
+                drawNeonSkeleton(hand);
+            } else {
+                currentPath = null;
+                isDragging = false;
+                selectedDrawing = null;
+            }
+            canvasCtx.restore();
+        }
 
-ctx.beginPath();
-ctx.strokeStyle="red";
-ctx.lineWidth=5;
-ctx.shadowBlur=15;
-ctx.shadowColor="red";
+        function updateParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw();
+                if (particles[i].life <= 0) particles.splice(i, 1);
+            }
+        }
 
-ctx.moveTo(d[0].x,d[0].y);
+        function drawStoredPaths() {
+            canvasCtx.lineCap = 'round';
+            canvasCtx.lineJoin = 'round';
 
-for(let i=1;i<d.length;i++){
-let p=d[i];
-let prev=d[i-1];
-let mx=(p.x+prev.x)/2;
-let my=(p.y+prev.y)/2;
-ctx.quadraticCurveTo(prev.x,prev.y,mx,my);
-}
+            drawings.forEach(d => {
+                if (d.points.length < 2) return;
+                
+                const isSelected = selectedDrawing && selectedDrawing.id === d.id;
+                
+                canvasCtx.save();
+                canvasCtx.shadowBlur = isSelected ? 30 : 15;
+                canvasCtx.shadowColor = isSelected ? '#ffff00' : '#ff0000';
+                canvasCtx.strokeStyle = isSelected ? '#ffff00' : '#ff0000';
+                canvasCtx.lineWidth = isSelected ? 8 : 5;
+                
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(d.points[0].x, d.points[0].y);
+                for (let i = 1; i < d.points.length; i++) canvasCtx.lineTo(d.points[i].x, d.points[i].y);
+                canvasCtx.stroke();
 
-ctx.stroke();
-ctx.shadowBlur=0;
-});
+                canvasCtx.shadowBlur = 0;
+                canvasCtx.strokeStyle = isSelected ? '#fffde7' : '#ffffff';
+                canvasCtx.lineWidth = isSelected ? 3 : 2;
+                canvasCtx.stroke();
+                
+                canvasCtx.restore();
+            });
+        }
 
-// ✅ SAFE HAND CHECK (MAIN FIX)
-if(res.multiHandLandmarks && res.multiHandLandmarks.length>0){
+        function drawNeonSkeleton(landmarks) {
+            const blue = '#00f2ff';
+            canvasCtx.save();
+            canvasCtx.shadowBlur = 15;
+            canvasCtx.shadowColor = blue;
+            canvasCtx.strokeStyle = blue;
+            canvasCtx.lineWidth = 3;
 
-let lm=res.multiHandLandmarks[0];
+            const connections = [
+                [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
+                [5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],
+                [13,17],[17,18],[18,19],[19,20],[0,17]
+            ];
 
-// extra safety
-if(!lm || !lm[8]) return;
+            connections.forEach(([a, b]) => {
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(landmarks[a].x * canvasElement.width, landmarks[a].y * canvasElement.height);
+                canvasCtx.lineTo(landmarks[b].x * canvasElement.width, landmarks[b].y * canvasElement.height);
+                canvasCtx.stroke();
+            });
 
-let rawX=lm[8].x*canvas.width;
-let rawY=lm[8].y*canvas.height;
+            canvasCtx.fillStyle = blue;
+            landmarks.forEach(point => {
+                canvasCtx.beginPath();
+                canvasCtx.arc(point.x * canvasElement.width, point.y * canvasElement.height, 4, 0, Math.PI * 2);
+                canvasCtx.fill();
+            });
+            canvasCtx.restore();
+        }
 
-// smooth
-sx=sx*smooth+rawX*(1-smooth);
-sy=sy*smooth+rawY*(1-smooth);
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
 
-let point={x:sx,y:sy};
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.9,
+            minTrackingConfidence: 0.9
+        });
 
-// ✌️ clear
-if(isVictory(lm) && Date.now()-lastClear>800){
-drawings=[];
-lastClear=Date.now();
-}
+        hands.onResults(onResults);
 
-// draw
-else if(isDraw(lm) && isForward(lm)){
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280, height: 720
+        });
+        camera.start();
 
-if(!currentPath){
-currentPath=[];
-drawings.push(currentPath);
-}
-
-// gap fix
-if(currentPath.length>0){
-let last=currentPath[currentPath.length-1];
-let d=dist(last,point);
-
-if(d>15){
-let steps=Math.floor(d/8);
-for(let i=1;i<=steps;i++){
-let t=i/steps;
-currentPath.push({
-x:last.x+(point.x-last.x)*t,
-y:last.y+(point.y-last.y)*t
-});
-}
-}
-}
-
-currentPath.push(point);
-
-}else{
-
-// auto shape on release
-if(currentPath && currentPath.length>5){
-let fixed=detectShape(currentPath);
-drawings[drawings.length-1]=fixed;
-}
-
-currentPath=null;
-}
-
-// skeleton
-ctx.strokeStyle="cyan";
-ctx.lineWidth=3;
-ctx.shadowBlur=10;
-ctx.shadowColor="cyan";
-
-const c=[
-[0,1],[1,2],[2,3],[3,4],
-[0,5],[5,6],[6,7],[7,8],
-[5,9],[9,10],[10,11],[11,12],
-[9,13],[13,14],[14,15],[15,16],
-[13,17],[17,18],[18,19],[19,20],
-[0,17]
-];
-
-c.forEach(([a,b])=>{
-ctx.beginPath();
-ctx.moveTo(lm[a].x*canvas.width,lm[a].y*canvas.height);
-ctx.lineTo(lm[b].x*canvas.width,lm[b].y*canvas.height);
-ctx.stroke();
-});
-
-ctx.shadowBlur=0;
-
-}else{
-// no hand → stop drawing safely
-currentPath=null;
-}
-
-}
-
-// mediapipe
-const hands=new Hands({
-locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
-});
-
-hands.setOptions({
-maxNumHands:1,
-modelComplexity:1,
-minDetectionConfidence:0.7,
-minTrackingConfidence:0.7
-});
-
-hands.onResults(onResults);
-
-// camera
-const camera=new Camera(video,{
-onFrame: async()=>{
-await hands.send({image:video});
-},
-width:640,
-height:480
-});
-
-// start (browser safe)
-document.body.addEventListener("click",()=>{
-camera.start();
-},{once:true});
-
-</script>
-
+    </script>
 </body>
 </html>
